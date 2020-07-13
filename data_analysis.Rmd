@@ -1,0 +1,665 @@
+---
+title: "The composition and weathering of the continents over geologic time"
+author: "Alex Lipp"
+date: "13/07/2020"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+---
+
+This document performs the data preprocessing and analysis for the article _'The composition and weathering of the continents over geologic time'_.
+
+# Setup
+
+Firstly we load in the required libraries. If these packages are not already installed they can be installed using the `install_packages` function. Note that the `deeptime` package may have to be installed manually.
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(directlabels)
+library(reshape2)
+library(MASS)
+library(ggridges)
+library(dplyr)
+library(deeptime)
+```
+
+Now we define some auxilliary functions that are helpful for compositional data analysis.
+
+```{r}
+clr_trsfm <- function(df){
+  # Performs centred log ratio transformation on a compositional dataframe
+  out<-data.frame(t(apply(df,1,function(x) log(x/exp(sum(log(x)/length(x)))))))
+  rownames(out) <- rownames(df)
+  return(out)
+}
+clr_inv <- function(df){
+  # Performs the inverse of the centred log ratio transformation on CLR dataframe. 
+  # NB this returns the composition normalised to 1
+  out<-data.frame(t(apply(df,1,function(x) exp(x)/(sum(exp(x))))))
+  return(out)
+}
+close <- function(df){
+  # Normalises compositional data to 1
+  out<-data.frame(t(apply(df,1,function(x) x/(sum(x)))))
+  rownames(out) <- rownames(df)
+  return(out)
+}
+norm_vec <- function(x){
+  # Returns the norm (magnitude) of a vector
+  return(sqrt(sum(x^2)))
+}
+
+# Weathering and provenance vectors used in this analysis
+
+w_vec_consensus <- c(0.2418534,  0.3691629,  0.2349810, 
+                     0.1338786, -0.4874057, -0.6782411,  0.1857709) # Average of Tooronogo and White 2001.
+p_vector_original <- c( 0.23373465,  0.09797867,
+                        -0.23159232, -0.60061708, +
+            0.24779572, -0.33628409,  0.58898446)
+
+UCC_clr_rudnickgao <- c(2.333699,	0.8690621,	-0.1423602,
+                        -0.9570468,	+
+                 -0.6805154,	-0.5871532,	-0.835686)
+
+
+coefficients_to_comp <- function(omega,psi){
+  # Calculates compositions from omega/psi coefficients (requires w, p and UCC predefined)
+  w <- w_vec_consensus 
+  p <- p_vector_original
+  UCC_clr <- UCC_clr_rudnickgao
+  clr = t(data.frame(UCC_clr + omega*w + psi*p))
+  rownames(clr) <- NULL
+  out <- clr_inv(clr)
+  names(out) <- oxides_list
+  return(out)
+}
+
+```
+
+# Loading and preprocessing geochemical data
+
+We load in the data from the [Sedimentary Geochemistry and Paleoenvironments Project](https://sgp.stanford.edu/).
+
+```{r tidy=TRUE}
+data_raw <- read.csv("data/SGP_final.csv",na.strings = "NULL") 
+# In the "interpreted_age" column NULL is used as an na string so we flag that here.
+```
+
+## Convert to oxides
+
+Alongside a host of meta data we are given the chemical composition in wt% elemental form, but we need it in wt% oxides, so we convert using [the factors here](https://www.jcu.edu.au/advanced-analytical-centre/services-and-resources/resources-and-extras/element-to-stoichiometric-oxide-conversion-factors). We also put them in the order Si, Al, Fe, Mg, Na, Ca, K and normalise so that each composition sums to the same total value, 1. We also exclude `NA` samples.
+
+```{r}
+# Convert elemental to oxide
+data_raw$SiO2 <- data_raw$si_wtpct * 2.1392
+data_raw$Al2O3 <- data_raw$al_wtpct * 1.8895
+data_raw$Fe2O3 <- data_raw$fe_wtpct * 1.4297
+data_raw$MgO <- data_raw$mg_wtpct * 1.6582
+data_raw$Na2O <- data_raw$na_wtpct * 1.3480 
+data_raw$CaO <- data_raw$ca_wtpct * 1.3992
+data_raw$K2O <- data_raw$k_wtpct * 1.2046
+
+# This allows quick indexing of the important part of the data
+oxides_list <- c("SiO2","Al2O3","Fe2O3","MgO","Na2O","CaO","K2O") 
+
+# Close dataset
+data_raw[,oxides_list] <- close(data_raw[,oxides_list]) # Close dataset
+data_raw <- data_raw[!(is.na(data_raw$sample_id)),] # Screen out NA samples
+
+```
+
+## Merge in previous compilation
+
+We're now going to merge in the data from our [previous paper](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2019GC008758) as this has more samples in the Archean. There are some samples in this previous compilation that are also present in the SGP dataset. The duplicates were manually identified and are removed from consideration here. 
+
+
+```{r}
+
+data_prev_paper_raw <- read.csv("data/sedimentary_rocks_PCA_paper.csv")
+data_prev_paper_raw[,oxides_list] <- close(data_prev_paper_raw[,oxides_list]) # Close to 1
+data_prev_paper_raw <- data_prev_paper_raw[!data_prev_paper_raw$Age.in.SGP.=="Y",] # Remove duplicate samples
+
+data_raw$origin <- "SGP" 
+data_prev_paper_raw$origin <- "Personal Compilation"
+
+data_raw <- bind_rows(data_raw,data_prev_paper_raw) 
+```
+
+## Remove samples with zeros
+
+Compositional data analysis can't cope with BDL values reported as "0", so we explicitly remove these. This only removes 64 samples.
+
+```{r}
+
+data_raw_no_zeros <- data_raw[!(apply((data_raw[,oxides_list] == 0),1,function(x) any(x))),]
+any(data_raw_no_zeros[,oxides_list] == 0) # Should be false if 0's all removed
+nrow(data_raw_no_zeros) - nrow(data_raw) # Number of samples removed
+```
+
+## Remove those with possible carbonate
+
+This KDE plot shows that there are a considerable number of samples with high values of CaO. These are highly likely to contain calcium carbonate which is not accounted for in the model and should be removed.
+
+```{r fig.width=4, fig.height=4, echo=FALSE}
+ggplot(data_raw_no_zeros,aes(x=CaO)) + geom_density() + ylab("Density") + theme_bw() + xlab("Proportion CaO")
+
+```
+
+It is specifically difficult to disentangle the effects of calcium addition from carbonate contamination from calcium addition from cation exchange with sodium, a problem resolved later. To exclude these samples we need to define the maximum amount of calcium we expect to see in a normal sediment which is unaffected by carbonate addition. A conservative estimate for the maximum amount of calcium a sediment can have would be the sum of the raw amount of calcium with the amount that could be added by swapping all the sodium out in the correct stoichometry. (A useful recent paper on cation exhchange by Maaren Lupker can be found [here](https://esurf.copernicus.org/articles/4/675/2016/)). This makes the assumption that all of the sodium in a sediment is exchangeable and thus this is a conservative estimate. We calculate this threshold using igneous rocks as these represent the geological materials and possible sediment protoliths with the highest total amount of Ca and Na (as weathering strips Na and Ca from rocks. Thus we look for the total natural amount of exchangeable Na and Ca in a sediment. This is given as the maximum possible amount of Ca, in moles, the sample could have, per kg of major element oxides. 
+
+The function defined below returns the possible number of moles of Ca per kg of sample, assuming all the Na is exchanged. 
+
+```{r}
+poss_max_ca <- function(composition){
+  raw_cao = composition["CaO"] # wt% ox
+  raw_ca = raw_cao / 1.3992
+  raw_ca_moles = raw_ca / 40.078
+  raw_na2o = composition["Na2O"] # wt% ox
+  raw_na = raw_na2o/1.3480 # wt% elem 
+  raw_na_moles = raw_na/22.989 # moles sodium
+  xchngbl_ca_moles = 0.5 * raw_na_moles # sodium exchanges with calcium in ratio 2:1
+  tot_ca_moles = raw_ca_moles + xchngbl_ca_moles # total possible amount of calcium
+  return(tot_ca_moles)
+}
+example_composition <- (data_raw_no_zeros[100,oxides_list])
+example_composition
+poss_max_ca(example_composition)
+```
+
+How do we find out the threshold value for number of moles of Ca above which we know carbonate must be added? We apply this function to a suite of igneous rocks and take the maximum value. The suite of igneous rocks we use is from the Crater Lake suite and covers the full range of igneous rock compositions from Basaltic to Rhyolitic (see [Lipp et al. 2020](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2019GC008758)). This then is the largest possible number of moles of Ca you can possible expect to find in a sediment. Anything more than this requires addition of CaCO3. The igneous suite we use is that from Crater Lake. 
+
+
+```{r fig.width=4, fig.height=4}
+igneous_rocks <- close(read.csv("data/craterlake_igneous.csv")[,5:11]) # Load in data and close it to 1
+maximum_poss_ca = apply(igneous_rocks,1,poss_max_ca) # Find max poss ca for all igneous rocks
+
+
+ggplot(igneous_rocks,aes(x=SiO2,y=maximum_poss_ca)) + geom_point() + theme_bw() + 
+  xlab("wt% SiO2") + ylab("Max possible moles Ca")
+
+max_poss_ca  = max(apply(igneous_rocks,1,poss_max_ca))
+max_poss_ca
+```
+
+Thus the largest amount of Ca we can expect to observe in 1 kg of sample that is unaffected by carbonate addition is $2.5 \times 10^{-3} \ \mathrm{mol}$. We also observe that basalts (i.e., low SiO2 samples) are those with the highest amount of possible moles Ca. 
+
+Thus now we filter the dataset to remove any samples which have a possible amount of Ca that exceeds this value. 
+
+```{r message=FALSE, warning=FALSE}
+maximum_poss_ca_sgp = apply(data_raw_no_zeros[,oxides_list],1,poss_max_ca)
+
+sum(maximum_poss_ca_sgp > 0.002508786)
+
+data_cleaned = data_raw_no_zeros[(maximum_poss_ca_sgp < 0.002508786),]
+
+ggplot(data_cleaned,aes(x=CaO)) + geom_density() + ylab("Density") + theme_bw() +
+  geom_density(data=data_raw,aes(x=CaO),colour="darkgrey") + 
+  coord_cartesian(xlim=c(0,0.5),expand = c(0,0))
+
+```
+
+The above density plot shows that our filtered distribution of CaO (black) now has a tighter distribution, less likely to include carbonate contaminated samples (original distribution shown in grey). However, we have excluded a high number of samples (~6000). 
+
+# Data Analysis
+
+## Numerically calculating $\omega$, $\psi$ and $\gamma$ for SGP dataset
+
+Now we are ready to numerically calculated $\omega$, $\psi$ and degree of cation exchange (herein, $\gamma$ is used instead of `prop_ca` for cation exchange.) First we write down the three subsets to file so they can be accessed by the `python` inversion script. The inversion is numerical, and thus could be quite slow. `python` has a faster set of optimisation algorithms than `R`, and so the actual inversion is implemented in `python`. See the file `invert_coeffs_grad.py` for details.
+
+```{r}
+write.csv(data_cleaned[,oxides_list],"data/SGP_data_cleaned_comps.csv",row.names = F) # Write these to file so it can be accessed from python
+```
+
+Next we call the `python` inversion script, directing it to the data, as well as providing filenames for where we want `python` to write the output (the coefficients and the fitted compositions.) 
+
+```{r}
+system("python invert_coeffs_grad.py data/SGP_data_cleaned_comps.csv data/SGP_data_cleaned_coeffs.csv data/SGP_data_cleaned_fit.csv")
+# The 'system' function simply passes the string to the terminal. If this doesn't work, simply copy paste it into the terminal and run it from there.
+```
+
+This inversion being performed we load in the results and append them to the metadata files
+
+```{r}
+data_cleaned_coeffs <- read.csv("data/SGP_data_cleaned_coeffs.csv",header=F,col.names =c("omega","psi","catex"))
+data_cleaned_fit <- read.csv("data/SGP_data_cleaned_fit.csv",header=F,col.names = oxides_list)
+recombined_data <- cbind(data_cleaned,data_cleaned_coeffs) # This is our recombined dataframe of metadata and the calculated coefficients
+
+```
+
+## Generating and analysing composite samples
+
+To calculate changing weathering and provenance on long, Ga, timescales, we first need to split the dataset into subsets by age period.
+
+```{r}
+# Extract different time periods
+
+modern <-  (recombined_data[recombined_data$interpreted_age < 500,]) # < 500
+neo_prot <- (recombined_data[(recombined_data$interpreted_age < 1000) & (recombined_data$interpreted_age >= 500),]) # 500 -> 1000
+meso_prot <- (recombined_data[(recombined_data$interpreted_age < 1500) & (recombined_data$interpreted_age >= 1000),]) # 1000 -> 1500
+paleo_prot <- (recombined_data[(recombined_data$interpreted_age < 2000) & (recombined_data$interpreted_age >= 1500),]) # 1500 -> 2000
+early_prot <- (recombined_data[(recombined_data$interpreted_age < 2500) & (recombined_data$interpreted_age >= 2000),]) # 2000 -> 2500
+archean <- (recombined_data[(recombined_data$interpreted_age >= 2500),]) # > 2500
+
+# Finer resolution in Archean
+paleo_archean <- (recombined_data[(recombined_data$interpreted_age < 3000) & (recombined_data$interpreted_age >= 2500),]) # 2500 -> 3000
+neo_archean <- (recombined_data[(recombined_data$interpreted_age < 3500) & (recombined_data$interpreted_age >= 3000),]) # 3000 -> 3500
+hadean <-  (recombined_data[(recombined_data$interpreted_age >= 3500),]) # > 3500
+
+```
+
+Secondly we generate a 'mixture' of each time period. This represents the composition of the characteristic sediment coming off the continents at each time period. This mixing is done by calculating the arithmetic mean. Subsequently we calculate the $\omega, \psi$ values of these mixtures. Assuming the sedimentary record is passively sampled, these mixtures represent flux weighted means of the sediment coming off the continents during each time period.
+
+```{r}
+
+modern_mixture <- apply(modern[,oxides_list],2,function(x) mean(x,na.rm=T)) 
+neo_prot_mixture <- apply(neo_prot[,oxides_list],2,function(x) mean(x,na.rm=T)) 
+meso_prot_mixture <- apply(meso_prot[,oxides_list],2,function(x) mean(x,na.rm=T))
+paleo_prot_mixture <- apply(paleo_prot[,oxides_list],2,function(x) mean(x,na.rm=T))
+early_prot_mixture <- apply(early_prot[,oxides_list],2,function(x) mean(x,na.rm=T)) 
+archean_mixture <- apply(archean[,oxides_list],2,function(x) mean(x,na.rm=T))
+
+mixture_comps <- (rbind(modern_mixture,neo_prot_mixture,meso_prot_mixture,
+                               paleo_prot_mixture,early_prot_mixture,archean_mixture))
+
+write.csv(mixture_comps,"data/mixture_comps.csv",row.names = F)
+```
+
+Now we run the inversion on these mixtures...
+
+```{r}
+system("python invert_coeffs_grad.py data/mixture_comps.csv data/mixture_coeffs.csv data/mixture_fit.csv")
+```
+
+... and load in the results
+
+```{r}
+mixture_coeffs <- read.csv("data/mixture_coeffs.csv",header=F,col.names =c("omega","psi","catex"))
+mixture_fit <- read.csv("data/mixture_fit.csv",header=F,col.names = oxides_list)
+mixture_coeffs$origin <- c("modern","neo_prot","meso_prot","paleo_prot","early_prot","archean")
+```
+
+# Provenance Results 
+
+## Reconstructing average UCC composition
+
+We can try and calculate the average composition of the crust over time using our mixture coefficients. Before doing this we have to calcualte the "pristine" $\omega$ value of igneous rocks. The value in the previous paper was calculated using a different *w* vector and model so its important to recalculate this.
+
+```{r}
+navdat <- read.csv("data/NAVDAT.csv")
+navdat_cleaned <- navdat[!(apply(navdat[,oxides_list]==0,1,any)),] # Screen for 0s
+any(navdat_cleaned[,oxides_list]==0) # No 0 values (should be false)
+any(is.na(navdat_cleaned)) # No NAs (should be false)
+
+# Calculate and extract coefficients
+write.csv(navdat_cleaned[,oxides_list],"data/navdat_comps.csv",row.names = F) # Write these to file so it can be accessed from python
+```
+
+Now we calculate the coefficients...
+
+```{r}
+system("python invert_coeffs_grad.py data/navdat_comps.csv data/navdat_coeffs.csv data/navdat_fit.csv")
+```
+
+... and load in the results.
+
+```{r}
+navdat_coeffs <- read.csv("data/navdat_coeffs.csv",header=F,col.names =c("omega","psi","catex"))
+navdat_fit <- read.csv("data/navdat_fit.csv",header=F,col.names =oxides_list)
+navdat_resids <- clr_trsfm(navdat_cleaned[,oxides_list]) - clr_trsfm(navdat_fit) # Navdat residuals
+  
+navdat_cleaned$omega <- navdat_coeffs$omega
+navdat_cleaned$psi <- navdat_coeffs$psi
+navdat_cleaned$catex <- navdat_coeffs$catex
+
+# Screen out anomalous samples 
+navdat_nohel <- navdat_cleaned[!(navdat_cleaned$Georef == "1995-068533"),] # Remove anomalous studies (see Lipp et al. 2020 for details)
+navdat_nohel_noog<- navdat_nohel[!(navdat_nohel$Georef == "1980-042937"),]
+navdat_residus_nohel <-  navdat_resids[!(navdat_cleaned$Georef == "1995-068533"),]
+navdat_resids_cleaned <-  navdat_residus_nohel[!(navdat_nohel$Georef == "1980-042937"),]
+
+navdat_cleaned_anomalous <- navdat_nohel_noog[navdat_nohel_noog$omega<0.5 & navdat_nohel_noog$omega>-1, ]  # Remove outliers
+
+pristine_omega<-mean(navdat_cleaned_anomalous$omega)
+stan_dev <- sd(navdat_cleaned_anomalous$omega)
+upper = pristine_omega + stan_dev
+lower = pristine_omega - stan_dev
+
+print(paste("Pristine omega = ",round(pristine_omega,3)))
+```
+
+Thus our new pristine $\omega$ value is -0.271. Now we use this value to estimate the bulk composition of the crust at different points in the Earth's history. 
+
+## Crustal compositions 
+
+```{r}
+# Extract the psi values
+
+modern_psi <- mixture_coeffs[mixture_coeffs$origin=="modern","psi"]
+neo_prot_psi <- mixture_coeffs[mixture_coeffs$origin=="neo_prot","psi"]
+meso_prot_psi <- mixture_coeffs[mixture_coeffs$origin=="meso_prot","psi"]
+paleo_prot_psi <- mixture_coeffs[mixture_coeffs$origin=="paleo_prot","psi"]
+early_prot_psi <- mixture_coeffs[mixture_coeffs$origin=="early_prot","psi"]
+archean_psi <- mixture_coeffs[mixture_coeffs$origin=="archean","psi"]
+
+# Convert into estimate of average composition
+
+modern_crust <- coefficients_to_comp(pristine_omega,modern_psi)
+neo_prot_crust <- coefficients_to_comp(pristine_omega,neo_prot_psi)
+meso_prot_crust <- coefficients_to_comp(pristine_omega,meso_prot_psi)
+paleo_prot_crust <- coefficients_to_comp(pristine_omega,paleo_prot_psi)
+early_prot_crust <-  coefficients_to_comp(pristine_omega,early_prot_psi)
+archean_crust <- coefficients_to_comp(pristine_omega,archean_psi)
+
+# Analagous calculation for present day UCC
+rudnick_gao_ucc <- coefficients_to_comp(pristine_omega,0)
+```
+
+We also may be interested in the uncertainties in these calculated compositions. To calculate uncertainties we simply use the distribution of residuals from a suite of igneous rocks, and superimpose these onto our estimates. 
+
+```{r}
+# clr transform of estimated crustal compositions
+clr_modern_crust <- clr_trsfm(modern_crust)
+clr_arch_crust <- clr_trsfm(archean_crust)
+
+arch_crust_uncert_ig <- clr_inv(navdat_resids_cleaned[,oxides_list] + clr_arch_crust[col(navdat_resids_cleaned[,oxides_list])]) 
+modern_crust_uncert_ig <- clr_inv(navdat_resids_cleaned[,oxides_list] + clr_modern_crust[col(navdat_resids_cleaned[,oxides_list])])
+
+navdat_resids_clean_scal <- scale(navdat_resids_cleaned[,oxides_list],scale = F)
+arch_crust_uncert_ig_cent <- clr_inv(navdat_resids_clean_scal +  clr_arch_crust[col(navdat_resids_cleaned[,oxides_list])]) 
+modern_crust_uncert_ig_cent <- clr_inv(navdat_resids_clean_scal+ clr_modern_crust[col(navdat_resids_cleaned[,oxides_list])])
+
+cbined_uncert <- rbind(data.frame(arch_crust_uncert_ig_cent, group="2.5 Ga+"), data.frame(modern_crust_uncert_ig_cent , group="0 - 0.5 Ga"))
+
+```
+
+Now we plot up the results for the crustal composition including the uncertainty using a TAS plot. The following chunk creates a TAS plot template using the code [here](https://stackoverflow.com/questions/53918035/use-a-diagram-as-background-template-in-a-plot).
+
+```{r}
+d = data.frame(x = c(40, 80), y = c(0,15)) 
+
+#makes the TAS template
+plot <- ggplot(data=d, mapping=aes(x=x, y=y)) + 
+  theme_bw() +
+  geom_blank() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits=c(0,15), expand = c(0, 0)) + 
+  scale_x_continuous(limits=c(40,80), expand = c(0, 0)) +
+  labs(y=expression("Average Protolith" ~Na[2]*O + K[2]*O*~ wt~'%'), x=expression("Average Protolith" ~SiO[2]*~ wt~'%'))+
+  annotate("segment", x=45, xend=45, y=1, yend=5)+
+  annotate("segment", x=45, xend=52, y=5, yend=5)+
+  annotate("segment", x=52, xend=69, y=5, yend=8)+
+  annotate("segment", x=76.5, xend=69, y=1, yend=8)+
+  annotate("segment", x=69, xend=69, y=8, yend=13)+
+  annotate("segment", x=45, xend=61.32, y=5, yend=13.7)+
+  annotate("segment", x=52, xend=52, y=1, yend=5)+
+  annotate("segment", x=57, xend=57, y=1, yend=5.9)+
+  annotate("segment", x=63, xend=63, y=1, yend=6.9)+
+  annotate("segment", x=52, xend=49.4, y=5, yend=7.3)+
+  annotate("segment", x=57, xend=53.05, y=5.9, yend=9.25)+
+  annotate("segment", x=63, xend=57.6, y=6.9, yend=11.7)+
+  annotate("segment", x=41, xend=45, y=3, yend=3)+
+  annotate("segment", x=41, xend=41, y=1, yend=3)+
+  annotate("segment", x=41, xend=41, y=3, yend=7, linetype="dashed")+
+  annotate("segment", x=41, xend=45, y=7, yend=9.4, linetype="dashed")+
+  annotate("segment", x=45, xend=52.5, y=9.4, yend=14)+
+  annotate("segment", x=49.4, xend=45, y=7.3, yend=9.4)+
+  annotate("segment", x=53, xend=48.4, y=9.3, yend=11.5)+
+  annotate("segment", x=57.6, xend=50.3, y=11.7, yend=15)
+
+tas <- plot + annotate("text", label = "Basalt", x = 48.5, y = 2, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Basaltic\n andesite", x = 54.8, y = 2.7, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Andesite", x = 60, y = 3.5, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Dacite", x = 67.5, y = 4.2, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Rhyolite", x = 72, y = 7, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Trachy- \n basalt", x = 48.8, y = 5.7, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Basaltic \n trachy- \n andesite", x = 52.5, y = 7, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Trachy- \n andesite", x = 57.8, y = 8, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Trachydacite", x = 65, y = 9, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Trachyte", x = 62.5, y = 11.5, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Picro- \n basalt", x = 43, y = 1.5, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Phono- \n tephrite", x = 48.5, y = 9.5, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Tephri- \n phonolite", x = 52.5, y = 11.5, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Phonolite", x = 57, y = 14, size=4,colour="#8c8c8c")+
+  annotate("text", label = "Foidite", x = 42, y = 12, size=4,colour="#8c8c8c")
+
+```
+
+Now we visualise the crustal compositions on the TAS plot including uncertainties.
+
+```{r}
+crust_compare_df <- rbind(archean_crust,early_prot_crust,paleo_prot_crust,meso_prot_crust,neo_prot_crust,modern_crust)
+
+
+crust_compare_df$age <- rev(c("0 - 0.5 Ga","0.5 - 1.0 Ga","1.0 - 1.5 Ga","1.5 - 2.0 Ga","2.0 - 2.5 Ga","2.5 Ga+"))
+crust_compare_df$age <- factor(crust_compare_df$age , levels = rev(crust_compare_df$age))
+
+
+psi_trend<-do.call(rbind,lapply(seq(-3,3,0.1),function(x) coefficients_to_comp(pristine_omega,x)))
+psi_trend_coarse<-do.call(rbind,lapply(seq(-2,3,0.5),function(x) coefficients_to_comp(pristine_omega,x)))
+
+tas+ geom_path(data=psi_trend,aes(x=SiO2*100,y=(Na2O+K2O)*100),linetype="dashed",size=0.25) +
+  stat_density2d(data=cbined_uncert,geom="tile", aes(fill = group, alpha=..density..,x=SiO2*100,y=(Na2O+K2O)*100),
+                 contour=FALSE,show.legend = F) + scale_alpha(range=c(0,1)) +
+  stat_ellipse(data=modern_crust_uncert_ig_cent, aes(x=SiO2*100,y=(Na2O+K2O)*100),
+               colour="#d7191c",level = 0.683,alpha=0.5,show.legend = F) +
+  stat_ellipse(data=arch_crust_uncert_ig_cent, aes(x=SiO2*100,y=(Na2O+K2O)*100),
+               colour="#2b83ba",level = 0.683,alpha=0.5,show.legend = F) +
+  geom_point(data=crust_compare_df,aes(x=SiO2*100,y=(Na2O+K2O)*100,fill=age),colour="black",pch=21,size=6) +
+  scale_fill_brewer(palette="Spectral") + labs(fill="Age") + 
+  geom_point(data=rudnick_gao_ucc,aes(x=SiO2*100,y=100*(Na2O+K2O)),colour="black",pch=4,size=7,show.legend = F) + 
+  coord_cartesian(xlim=c(45,75),ylim=c(1.5,10.5)) + guides(color=guide_legend(override.aes=list(fill=NA))) 
+
+```
+
+Thus, we conclude that prior to 2.5 Ga, the crust was *on average* dacitic and slightly more mafic than the present day, but by 2.0 Ga had evolved into its mostly present day more evolved composition (indicated by the cross). 
+
+## Secular Trends in Protolith Composition
+
+Another way of looking at the variation in compositions through time is to look at the mean $\psi$, before mixing the compositions. This can't be used to reconstruct crustal composition but it is useful in looking at changes in protolith diversity through time. We also extract the standard deviations for each time interval.
+
+```{r}
+modern_psi_geo <- mean(modern$psi,na.rm=T)
+neo_prot_psi_geo <- mean(neo_prot$psi,na.rm=T) # geometric mean. i.e. mean _without_ mixing
+meso_prot_psi_geo <- mean(meso_prot$psi,na.rm=T)
+paleo_prot_psi_geo <- mean(paleo_prot$psi,na.rm=T)
+early_prot_psi_geo <- mean(early_prot$psi,na.rm=T)
+archean_psi_geo <- mean(archean$psi,na.rm=T)
+paleo_archean_psi_geo <- mean(paleo_archean$psi,na.rm=T)
+neo_archean_psi_geo <- mean(neo_archean$psi,na.rm=T)
+hadean_psi_geo <-  mean(hadean$psi,na.rm=T)
+
+modern_psi_sd <- sd(modern$psi,na.rm=T) 
+neo_prot_psi_sd <- sd(neo_prot$psi,na.rm=T)
+meso_prot_psi_sd <- sd(meso_prot$psi,na.rm=T)
+paleo_prot_psi_sd <- sd(paleo_prot$psi,na.rm=T)
+early_prot_psi_sd <- sd(early_prot$psi,na.rm=T) 
+archean_psi_sd <- sd(archean$psi,na.rm=T)
+paleo_archean_psi_sd <- sd(paleo_archean$psi,na.rm=T) 
+neo_archean_psi_sd <- sd(neo_archean$psi,na.rm=T) 
+hadean_psi_sd <-  sd(hadean$psi,na.rm=T)
+```
+
+Now we visualise how these mean $\psi$ values have changed in time.
+
+```{r message=FALSE, warning=FALSE}
+recombined_data$chunked_age_500 <- as.factor((recombined_data$interpreted_age%/%500)*500)
+chunk_to_n_500 <- function(chunk){
+  sum(recombined_data[!(is.na(recombined_data$interpreted_age)),]$chunked_age_500 == chunk) 
+}
+ns <- paste0("n = ",as.character(sapply(as.factor(seq(0,3500,500)),chunk_to_n_500)))
+
+means_df <- data.frame(psi=c(modern_psi_geo,neo_prot_psi_geo,meso_prot_psi_geo,paleo_prot_psi_geo,early_prot_psi_geo,paleo_archean_psi_geo,
+                             neo_archean_psi_geo,hadean_psi_geo),
+                       age=c(0.25,0.75,1.25,1.75,2.25,2.75,3.25,3.75),
+                       sd=c(modern_psi_sd,neo_prot_psi_sd,meso_prot_psi_sd,paleo_prot_psi_sd,early_prot_psi_sd,paleo_archean_psi_sd,
+                            neo_archean_psi_sd,hadean_psi_sd)) 
+
+ggplot() + 
+  geom_polygon(aes(x=c(0,0,0.5,0.5),y=c(-3,3,3,-3)),fill="#d7191c",alpha=0.15) + 
+  geom_polygon(aes(x=c(2.5,2.5,4,4),y=c(-3,3,3,-3)),fill="#2b83ba",alpha=0.15) + 
+  geom_hline(yintercept=0,colour="black") +
+  geom_point(data=recombined_data,aes(x=interpreted_age/1000,y=psi),size=0.3,colour="lightgrey") + 
+  theme_bw() + coord_cartesian(ylim=c(-3,3),expand=c(0,0)) + 
+  ylab(expression("(Mafic)            "*psi*", provenance            (Felsic)")) + xlab("Age, Ga") +
+  geom_errorbar(data=means_df[1:6,],aes(x=age,y=psi,ymin=psi-sd,ymax=psi+sd),width=0) + geom_point(data=means_df[1:6,],aes(x=age,y=psi),size=4) + 
+  geom_vline(data=data.frame(x=c(0.5,1,1.5,2,2.5,3,3.5)),size=0.4,linetype="dotted",aes(xintercept=x)) + 
+  geom_text(data=data.frame(x=c(0.25,0.7,1.2,1.7,2.2,2.7,3.2,3.7),y=-2.75,label=ns),aes(x=x,y=y,label=label),size=2.5) + 
+  scale_x_reverse() + 
+  geom_errorbar(data=means_df[7:8,],aes(x=age,y=psi,ymin=psi-sd,ymax=psi+sd),width=0,colour="darkgrey") +
+  geom_point(data=means_df[7:8,],aes(x=age,y=psi),size=4,colour="darkgrey")  
+
+```
+
+It is interesting to note that there is significant scatter arond the secular trend of increasingly more felsic crust. Whilst there certainly is a meaningful difference between the two populations this difference can be overstated. The boxplots show that the two populations overlap significantly. 
+
+```{r message=FALSE, warning=FALSE}
+modern_psi_vals <- modern$psi[!is.na(modern$psi)]
+archean_psi_vals <- archean$psi[!is.na(archean$psi)]
+
+psi_df<- rbind(data.frame(psi = modern_psi_vals,age="0 - 0.5"),
+          data.frame(psi = archean_psi_vals,age="2.5 +"))
+
+psi_df$age <- factor(psi_df$age,levels=c("2.5 +","0 - 0.5"))
+
+ggplot(psi_df,aes(x=age,y=psi)) + geom_boxplot(outlier.shape = NA) + theme_bw() + 
+  geom_jitter(data=sample_n(data.frame(psi = modern_psi_vals,age="0 - 0.5"),150),aes(x=age,y=psi,colour=age),size=0.5) +
+  geom_jitter(data=sample_n(data.frame(psi = archean_psi_vals,age="2.5 +"),150),aes(x=age,y=psi,colour=age),size=0.5) + 
+  labs("Age") + labs(colour="Age") + xlab("Age, Ga") + 
+  ylab(expression("(Mafic)            "*psi*", provenance            (Felsic)")) + xlab("Age, Ga") +
+  scale_color_manual(values=c("#d7191c","#2b83ba")) + guides(colour=F) + coord_cartesian(ylim=c(-3,3),expand=c(0,0))
+
+
+```
+
+This confirms that the variation between time periods dominates over the differences between their central tendencies. This emphasises the heterogeneity of the Archean crust.
+
+# Weathering Results
+
+## Long term changes in CO2 sequestration potential 
+
+A useful benefit of our model is that we can calculate how much CO2 has been lost per unit rock initially eroded. Here we define a few functions to explore how weathering affects mass loss. 
+
+```{r}
+frac_mass_loss <- function(omega,psi){
+  final_comp <- coefficients_to_comp(omega,psi)
+  initial_comp <- coefficients_to_comp(pristine_omega,psi)
+  fractional_mass_lost <- (final_comp/initial_comp)*(initial_comp$Al2O3/final_comp$Al2O3) -1
+  return(fractional_mass_lost)
+}
+
+
+abs_mass_loss <- function(omega,psi){
+  # Returns kg of each element lost per kg of original rock
+  abs_mass_loss_ox <- frac_mass_loss(omega,psi)*coefficients_to_comp(pristine_omega,psi)
+  abs_mass_loss_elem <- abs_mass_loss_ox  / c(2.1392,1.8895,1.4297,1.6582,1.3480,1.3992,1.2046) # oxide to elemental
+  return(abs_mass_loss_elem)
+}
+
+co2_drawdown_potential <- function(omega,psi){
+  # Returns kg of CO2 potentially removed per kg of original rock 
+  # Assumes all acidity donated by carbonix acid
+  # Ca all sunk as carbonate and Mg exchanged for Ca at ocean vents
+  mass_loss <- abs_mass_loss(omega,psi)
+  moles_ca_eroded <- 1000*mass_loss$CaO/40.078 # *10^3 to convert kg -> g
+  moles_mg_eroded <- 1000*mass_loss$MgO/24.305
+  moles_co2_seq <- -1*(moles_ca_eroded + moles_mg_eroded)
+  mass_co2_seq <- (moles_co2_seq*44)/1000 # kg CO2
+  return(mass_co2_seq)
+}
+
+grid_omega_psi <- expand.grid(seq(-0.5,2,0.1),seq(-1,1,0.1))
+names(grid_omega_psi) <- c("omega","psi")
+
+co2_loss_df <- do.call(rbind,lapply(seq(1,nrow(grid_omega_psi)),
+                     function(x) co2_drawdown_potential(grid_omega_psi[x,1],
+                                                grid_omega_psi[x,2])))
+
+ggplot(cbind(grid_omega_psi,co2_loss_df),aes(x=omega,y=psi,fill=co2_loss_df*1000)) + geom_tile() + 
+  coord_equal() + theme_bw() + scale_x_continuous(expand=c(0,0)) + 
+  scale_y_continuous(expand=c(0,0)) + stat_contour(aes(z=co2_loss_df*1000),colour="black",breaks=seq(0,150,10)) + 
+  xlab(expression(omega)) + ylab(expression(psi)) + labs(fill="kg CO2 sequestered per \n1000kg protolith eroded",caption="Contours at 10 kg")
+```
+
+Now we create some profiles for typical protoliths to look at how much CO2 is sequestered for a given weathering intensity. 
+
+```{r message=FALSE, warning=FALSE}
+UCC_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,modern_psi))
+arch_UCC_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,archean_psi))
+basalt_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,-2))
+rhyolite_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,2))
+
+
+co2_df <- data.frame(omega=(seq(pristine_omega,4,0.05)),modern_co2 = UCC_weath_co2,
+                     arch_co2 = arch_UCC_weath_co2,basalt_co2 = basalt_weath_co2,
+                     rhyolite_weath_co2)
+ggplot(melt(co2_df,id.vars = "omega"),aes(x=omega,colour=variable,y=value*1000)) + geom_path(size=1.5) + theme_bw() + xlab(expression(omega)) + 
+  ylab("kg CO2 sequestered per 1000kg rock") + scale_y_continuous(expand=c(0,0)) + labs(colour="Protolith") + 
+  scale_color_discrete(labels=c("Modern UCC","Archean UCC","Basalt","Rhyolite")) 
+
+ggplot(co2_df,aes(x=omega,y=arch_co2/modern_co2)) + geom_path() + geom_path(size=1) +
+  theme_bw() + xlab(expression(omega*", weathering intensity"))  + scale_y_continuous(expand=c(0,0)) + 
+  ylab(expression("Ratio Modern:Archean "*CO[2]*" drawdown")) +
+  geom_segment(aes(x=pristine_omega,xend=pristine_omega,y=1.265,yend=1.26),arrow = arrow()) + 
+  geom_text(aes(y=1.2675,x=pristine_omega,label="Pristine \nRocks"))
+
+
+```
+
+These indicate that depending on the rock being eroded there is a significant difference in the the amount of CO2 being eroded for all $\omega$ values. The difference between archean and modern UCC's CO2 potential is however constant over most $\omega$ values, being around 27% higher. In otherwords, per kg of rock eroded and weathered, 27% more CO2 could be brought down for a given weathering intensity. 
+
+Now we visualise crustal compositions through time on an $\omega$-$\psi$ plot alongside contours of CO2 drawdown capacity.
+
+```{r}
+mixture_coeffs$origin <- factor(mixture_coeffs$origin,levels=c("modern","neo_prot","paleo_prot","meso_prot","early_prot","archean","river_average"))
+
+ggplot(cbind(grid_omega_psi,co2_loss_df),aes(x=omega,y=psi,fill=co2_loss_df*1000)) + geom_tile() + 
+  coord_equal(xlim=c(pristine_omega,2)) + scale_fill_distiller(palette=6) + theme_bw() + scale_x_continuous(expand=c(0,0)) + 
+  scale_y_continuous(expand=c(0,0)) + stat_contour(aes(z=co2_loss_df*1000),colour="black",breaks=seq(0,150,10)) + 
+  xlab(expression(omega*", weathering intensity")) + ylab(expression(psi*", provenance")) + labs(fill="CO2 drawdown \npotential, kg/t")  + 
+  geom_hline(yintercept = modern_psi,colour="white",linetype="dashed",size=1.25) + 
+  geom_hline(yintercept = archean_psi,colour="white",linetype="dotted",size=1.25) + 
+  geom_point(inherit.aes=F,data=mixture_coeffs[1:6,],aes(x=omega,y=psi,colour=origin),size=4.5) + 
+  scale_colour_brewer(palette ="Spectral",labels=c("0 - 0.5","0.5 - 1.0","1.0 - 1.5","1.5 - 2.0","2.0 - 2.5","2.5 +")) + 
+  labs(colour="Age, Ga")
+
+co2_loss_df_samples <- data.frame(do.call(rbind,lapply(seq(1,nrow(mixture_coeffs)),
+                     function(x) co2_drawdown_potential(mixture_coeffs[x,"omega"],
+                                                mixture_coeffs[x,"psi"]))))*1000
+names(co2_loss_df_samples) <- c("CO2 drawdown")
+
+```
+
+Looking at how different crustal compositions plot on this diagram we conclude that over the course of Earth's history the 'weatherability' of continental crust has remained constant, with the exception of the Archean. As a result, to respond to secular changes in degassing, the amount of erosion and weathering must have increased not the intensity. The lower observed weathering intensity is likely a result of carbonate contamination, which disproportionately affects the Phanerozoic samples. Hence, neglecting this anomaly, the CO2 drawdown efficiency of the continents is constant on long timescales after the Archean.
+
+## Phanerozoic history of weathering intensity
+
+On shorter timescales however, we may expect to see secular variations in weathering intensity in response to cooling (e.g. [Pogge von Strandmann et al 2017](https://www.geochemicalperspectivesletters.org/article1726/)). To overcome the local signal preserved in individual sediments we need high data density. In addition we need to smooth the highly noisy signal, hence we use a Gaussian window smoothing kernel with a 30 Myr bandwidth. We use [Will Gearty's excellent `deeptime` package](https://github.com/willgearty/deeptime) here to add a geological timescale to the figure 
+
+```{r,message=FALSE, warning=FALSE}
+recombined_data_young <- recombined_data[!(is.na(recombined_data$interpreted_age)) & recombined_data$interpreted_age<600,]
+recombined_data_young <- recombined_data_young[order(recombined_data_young$interpreted_age),]
+
+# Apply a gaussian filter with bandwidth of 30 Myr. 
+smoothed_weathering <- data.frame(ksmooth(x=recombined_data_young$interpreted_age,y=recombined_data_young$omega,kernel="normal",bandwidth = 30,n=1000))
+
+# Plot up the data and the smoothed results
+ggplot(recombined_data_young, aes(x=interpreted_age,y=omega)) +
+  geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + # Dates from MacDonald et al 2019
+  geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=260,xend=339,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=358,xend=366,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=440,xend=458,y=-0.35,yend=-0.35),colour="#a1cbff",size=15)  +
+  geom_segment(inherit.aes=F,aes(xend=458,x=359,y=0,yend=0),colour="#8de09d",size=15) + # Dates from McMahon & Davies 2018, upsurge in mudrock
+  geom_point(size=0.2,colour="#d1d1d1") + theme_bw() +
+  ylab(expression(omega*", weathering intensity")) + xlab("Age, Ma") + 
+  scale_x_reverse()  +
+  geom_path(data=smoothed_weathering,aes(x=x,y=y),colour="black") +
+  coord_geo(xlim = c(600, 0), ylim=c(-0.5,2),expand=c(0,0))  +
+  geom_text(aes(x=500,y=0,label="Expansion of \n land plants"),colour="darkgreen") +
+  geom_text(aes(x=500,y=-0.35,label="Glaciations"),colour="#002f9c") 
+```
+
+
+
