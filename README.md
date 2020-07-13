@@ -15,7 +15,7 @@ The script `invert_coeffs_grad.py` is a `python` script which calculates the wea
 
 The Sedimentary Geochemistry and Paleoenvironments Project sedimentary major-element data is given in `SGP_final.csv`. Data from [Lipp et al. 2020](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2019GC008758) is given in `sedimentary_rocks_PCA_paper.csv`. 
 
-References for SGP data are given in `filenamehere.csv`. See [`github.com/alexLipp/weathering-and-provenance`](github.com/alexLipp/weathering-and-provenance) for references for data from Lipp et al. 2020.
+References for SGP data are given in `SGP_references.csv`. See [`github.com/alexLipp/weathering-and-provenance`](github.com/alexLipp/weathering-and-provenance) for references for data from Lipp et al. 2020.
 
 ### Output Data
 
