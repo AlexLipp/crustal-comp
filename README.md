@@ -9,6 +9,8 @@ The same document is also given in the raw `.Rmd` form, which can be opened in [
 
 The script `invert_coeffs_grad.py` is a `python` script which calculates the weathering and provenance coefficients for a given set of major-element compositions, incorporating a cation exchange correction. This was written in `python` v3.6.9.
 
+The script `SGP_query.sql` is the `SQL` command used to query the Sedimentary Geochemistry and Paleoenvironments project database.
+
 ## Data 
 
 ### Main data files 
