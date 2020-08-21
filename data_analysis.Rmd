@@ -6,6 +6,8 @@ output:
   html_document:
     df_print: paged
     toc: yes
+  pdf_document:
+    toc: yes
 ---
 
 This document performs the data preprocessing and analysis for the article _'The composition and weathering of the continents over geologic time'_.
@@ -107,6 +109,16 @@ oxides_list <- c("SiO2","Al2O3","Fe2O3","MgO","Na2O","CaO","K2O")
 data_raw[,oxides_list] <- close(data_raw[,oxides_list]) # Close dataset
 data_raw <- data_raw[!(is.na(data_raw$sample_id)),] # Screen out NA samples
 
+unique(data_raw$lith_name)
+
+```
+## Screen out lithologies 
+
+```{r}
+data_raw <- data_raw[data_raw$lith_name %in% c("shale", "mudstone", "siltstone", "sandstone", "sand","arkose", "arenite",
+                              "oil shale", "argillite", "mud", "meta-argillite", "slate", "greywacke", 
+                              "metagreywacke", "pelite", "metapelite", "claystone", "metasiltstone"),] # Screen out NA samples
+nrow(data_raw)
 ```
 
 ## Merge in previous compilation
@@ -123,12 +135,13 @@ data_prev_paper_raw <- data_prev_paper_raw[!data_prev_paper_raw$Age.in.SGP.=="Y"
 data_raw$origin <- "SGP" 
 data_prev_paper_raw$origin <- "Personal Compilation"
 
-data_raw <- bind_rows(data_raw,data_prev_paper_raw) 
+data_raw <- bind_rows(data_raw,data_prev_paper_raw)  
+
 ```
 
 ## Remove samples with zeros
 
-Compositional data analysis can't cope with BDL values reported as "0", so we explicitly remove these. This only removes 64 samples.
+Compositional data analysis can't cope with BDL values reported as "0", so we explicitly remove these. This only removes 24 samples.
 
 ```{r}
 
@@ -199,7 +212,7 @@ ggplot(data_cleaned,aes(x=CaO)) + geom_density() + ylab("Density") + theme_bw() 
 
 ```
 
-The above density plot shows that our filtered distribution of CaO (black) now has a tighter distribution, less likely to include carbonate contaminated samples (original distribution shown in grey). However, we have excluded a high number of samples (~6000). 
+The above density plot shows that our filtered distribution of CaO (black) now has a tighter distribution, less likely to include carbonate contaminated samples (original distribution shown in grey). 
 
 # Data Analysis
 
@@ -227,7 +240,7 @@ recombined_data <- cbind(data_cleaned,data_cleaned_coeffs) # This is our recombi
 
 ```
 
-## Generating and analysing composite samples
+## Generating and analysing composite samples over long timescales
 
 To calculate changing weathering and provenance on long, Ga, timescales, we first need to split the dataset into subsets by age period.
 
@@ -261,7 +274,7 @@ archean_mixture <- apply(archean[,oxides_list],2,function(x) mean(x,na.rm=T))
 
 mixture_comps <- (rbind(modern_mixture,neo_prot_mixture,meso_prot_mixture,
                                paleo_prot_mixture,early_prot_mixture,archean_mixture))
-
+print(mixture_comps)
 write.csv(mixture_comps,"data/mixture_comps.csv",row.names = F)
 ```
 
@@ -428,13 +441,12 @@ tas <- plot + annotate("text", label = "Basalt", x = 48.5, y = 2, size=4,colour=
 
 Now we visualise the crustal compositions on the TAS plot including uncertainties.
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 crust_compare_df <- rbind(archean_crust,early_prot_crust,paleo_prot_crust,meso_prot_crust,neo_prot_crust,modern_crust)
 
 
 crust_compare_df$age <- rev(c("0 - 0.5 Ga","0.5 - 1.0 Ga","1.0 - 1.5 Ga","1.5 - 2.0 Ga","2.0 - 2.5 Ga","2.5 Ga+"))
 crust_compare_df$age <- factor(crust_compare_df$age , levels = rev(crust_compare_df$age))
-
 
 psi_trend<-do.call(rbind,lapply(seq(-3,3,0.1),function(x) coefficients_to_comp(pristine_omega,x)))
 psi_trend_coarse<-do.call(rbind,lapply(seq(-2,3,0.5),function(x) coefficients_to_comp(pristine_omega,x)))
@@ -450,6 +462,7 @@ tas+ geom_path(data=psi_trend,aes(x=SiO2*100,y=(Na2O+K2O)*100),linetype="dashed"
   scale_fill_brewer(palette="Spectral") + labs(fill="Age") + 
   geom_point(data=rudnick_gao_ucc,aes(x=SiO2*100,y=100*(Na2O+K2O)),colour="black",pch=4,size=7,show.legend = F) + 
   coord_cartesian(xlim=c(45,75),ylim=c(1.5,10.5)) + guides(color=guide_legend(override.aes=list(fill=NA))) 
+
 
 ```
 
@@ -510,6 +523,7 @@ ggplot() +
   geom_errorbar(data=means_df[7:8,],aes(x=age,y=psi,ymin=psi-sd,ymax=psi+sd),width=0,colour="darkgrey") +
   geom_point(data=means_df[7:8,],aes(x=age,y=psi),size=4,colour="darkgrey")  
 
+
 ```
 
 It is interesting to note that there is significant scatter arond the secular trend of increasingly more felsic crust. Whilst there certainly is a meaningful difference between the two populations this difference can be overstated. The boxplots show that the two populations overlap significantly. 
@@ -529,7 +543,6 @@ ggplot(psi_df,aes(x=age,y=psi)) + geom_boxplot(outlier.shape = NA) + theme_bw() 
   labs("Age") + labs(colour="Age") + xlab("Age, Ga") + 
   ylab(expression("(Mafic)            "*psi*", provenance            (Felsic)")) + xlab("Age, Ga") +
   scale_color_manual(values=c("#d7191c","#2b83ba")) + guides(colour=F) + coord_cartesian(ylim=c(-3,3),expand=c(0,0))
-
 
 ```
 
@@ -590,7 +603,6 @@ arch_UCC_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown
 basalt_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,-2))
 rhyolite_weath_co2 <- sapply(seq(pristine_omega,4,0.05),function(x) co2_drawdown_potential(x,2))
 
-
 co2_df <- data.frame(omega=(seq(pristine_omega,4,0.05)),modern_co2 = UCC_weath_co2,
                      arch_co2 = arch_UCC_weath_co2,basalt_co2 = basalt_weath_co2,
                      rhyolite_weath_co2)
@@ -601,8 +613,8 @@ ggplot(melt(co2_df,id.vars = "omega"),aes(x=omega,colour=variable,y=value*1000))
 ggplot(co2_df,aes(x=omega,y=arch_co2/modern_co2)) + geom_path() + geom_path(size=1) +
   theme_bw() + xlab(expression(omega*", weathering intensity"))  + scale_y_continuous(expand=c(0,0)) + 
   ylab(expression("Ratio Modern:Archean "*CO[2]*" drawdown")) +
-  geom_segment(aes(x=pristine_omega,xend=pristine_omega,y=1.265,yend=1.26),arrow = arrow()) + 
-  geom_text(aes(y=1.2675,x=pristine_omega,label="Pristine \nRocks"))
+  geom_segment(aes(x=pristine_omega,xend=pristine_omega,y=1.255,yend=1.25),arrow = arrow()) + 
+  geom_text(aes(y=1.2575,x=pristine_omega,label="Pristine \nRocks"))
 
 
 ```
@@ -635,7 +647,7 @@ Looking at how different crustal compositions plot on this diagram we conclude t
 
 ## Phanerozoic history of weathering intensity
 
-On shorter timescales however, we may expect to see secular variations in weathering intensity in response to cooling (e.g. [Pogge von Strandmann et al 2017](https://www.geochemicalperspectivesletters.org/article1726/)). To overcome the local signal preserved in individual sediments we need high data density. In addition we need to smooth the highly noisy signal, hence we use a Gaussian window smoothing kernel with a 30 Myr bandwidth. We use [Will Gearty's excellent `deeptime` package](https://github.com/willgearty/deeptime) here to add a geological timescale to the figure 
+On shorter timescales however, we may expect to see secular variations in weathering intensity in response to cooling (e.g. [Pogge von Strandmann et al 2017](https://www.geochemicalperspectivesletters.org/article1726/)). To overcome the local signal preserved in individual sediments we need high data density. In addition we need to smooth the highly noisy signal, hence we use a Gaussian window smoothing kernel with a 30 Myr bandwidth. We use [Will Gearty's `deeptime` package](https://github.com/willgearty/deeptime) here to add a geological timescale to the figure. 
 
 ```{r,message=FALSE, warning=FALSE}
 recombined_data_young <- recombined_data[!(is.na(recombined_data$interpreted_age)) & recombined_data$interpreted_age<600,]
@@ -643,7 +655,34 @@ recombined_data_young <- recombined_data_young[order(recombined_data_young$inter
 
 # Apply a gaussian filter with bandwidth of 30 Myr. 
 smoothed_weathering <- data.frame(ksmooth(x=recombined_data_young$interpreted_age,y=recombined_data_young$omega,kernel="normal",bandwidth = 30,n=1000))
+```
 
+To generate uncertainties for our smoothed trend we use a bootstrap resampling technique. We resample out
+
+```{r}
+combined_bootstrap_smooths <- data.frame(x = smoothed_weathering$x)
+
+n_bootstrap = 1000
+# Warning this loop can be slow! Change `n_bootstrap` to a smaller number for faster runtime
+for(i in 1:n_bootstrap){
+  bootstrap_resample <- recombined_data_young[sample(1:nrow(recombined_data_young),nrow(recombined_data_young),replace=TRUE),]
+  bootstrap_resample <- bootstrap_resample[order(bootstrap_resample$interpreted_age),]
+  smoothed_bootstrap <- data.frame(ksmooth(x=bootstrap_resample$interpreted_age,y=bootstrap_resample$omega,kernel="normal",
+                                           range.x=range(recombined_data_young$interpreted_age),bandwidth = 30,n=1000))
+  combined_bootstrap_smooths <- cbind(combined_bootstrap_smooths,smoothed_bootstrap$y)
+}
+
+bootstrap_mean <- apply(combined_bootstrap_smooths[,1:n_bootstrap+1],1,mean)
+bootstrap_sd <- apply(combined_bootstrap_smooths[,1:n_bootstrap+1],1,sd)
+bootstrap_upper <- apply(combined_bootstrap_smooths[,1:n_bootstrap+1],1,function(x) quantile(unlist(x),1 )) # change 1 for 0.95 for 95% envelope etc...
+bootstrap_lower <- apply(combined_bootstrap_smooths[,1:n_bootstrap+1],1,function(x) quantile(unlist(x),0 ))
+bootstrap_results <- data.frame(x = combined_bootstrap_smooths$x,mean=bootstrap_mean,sd=bootstrap_sd,min=bootstrap_lower,max=bootstrap_upper)
+
+```
+
+Finally we visualise the trend including the bootstrap uncertainties.
+
+```{r message=FALSE, warning=FALSE}
 # Plot up the data and the smoothed results
 ggplot(recombined_data_young, aes(x=interpreted_age,y=omega)) +
   geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + # Dates from MacDonald et al 2019
@@ -655,11 +694,77 @@ ggplot(recombined_data_young, aes(x=interpreted_age,y=omega)) +
   geom_point(size=0.2,colour="#d1d1d1") + theme_bw() +
   ylab(expression(omega*", weathering intensity")) + xlab("Age, Ma") + 
   scale_x_reverse()  +
-  geom_path(data=smoothed_weathering,aes(x=x,y=y),colour="black") +
-  coord_geo(xlim = c(600, 0), ylim=c(-0.5,2),expand=c(0,0))  +
+  geom_path(data=smoothed_weathering,aes(x=x,y=y),colour="black") +  
+  geom_path(data=bootstrap_results,aes(x=x,y=min),colour="darkgrey") + 
+  geom_path(data=bootstrap_results,aes(x=x,y=max),colour="darkgrey") +
+  coord_geo(xlim = c(600, 0), ylim=c(-0.5,2.5),expand=c(0,0))  +
   geom_text(aes(x=500,y=0,label="Expansion of \n land plants"),colour="darkgreen") +
   geom_text(aes(x=500,y=-0.35,label="Glaciations"),colour="#002f9c") 
 ```
 
+### Stratigraphic Unit Averages 
+
+Here we generate an analagous figure to above but first we take the average of all the $\omega$ values from within a stratigraphic unit. This will potentially limit the effect of sampling bias. 
+
+First we calculate the mean $\omega$ value for each stratigraphic unit (indicated by the `strat_name_long` field in the SGP database). To give each unit an age we simply take the mean of all the different ages assigned to that unit in the SGP dataset. Next we smooth this data using a gaussian average as normal.
+
+```{r}
+formation_average_omega <- aggregate(recombined_data_young$omega,by=list(recombined_data_young$strat_name_long),mean)
+names(formation_average_omega) <- c("strat_name_long","omega")
+formation_average_omega$interpreted_age <- aggregate(recombined_data_young$interpreted_age,by=list(recombined_data_young$strat_name_long),function(x) mean(x,na.rm=F))$x
+
+formation_average_omega <- formation_average_omega[order(formation_average_omega$interpreted_age),]
+formation_average_omega <- formation_average_omega[!is.na(formation_average_omega$interpreted_age),]
+
+smoothed_weathering_om_avg <- data.frame(ksmooth(x=formation_average_omega$interpreted_age,y=formation_average_omega$omega,kernel="normal",bandwidth = 30, n=1000))
+
+```
+
+Similarly, for these formation averaged samples we bootstrap the data in the same way as above. 
+
+```{r}
+combined_bootstrap_smooths_avg <- data.frame(x = smoothed_weathering_om_avg$x)
+
+n_bootstrap = 1000
+
+for(i in 1:n_bootstrap){
+  bootstrap_resample_avg <- formation_average_omega[sample(1:nrow(formation_average_omega),nrow(formation_average_omega),replace=TRUE),]
+  bootstrap_resample_avg <- bootstrap_resample_avg[order(bootstrap_resample_avg$interpreted_age),]
+  smoothed_bootstrap_avg <- data.frame(ksmooth(x=bootstrap_resample_avg$interpreted_age,y=bootstrap_resample_avg$omega,kernel="normal",
+                                           range.x=range(formation_average_omega$interpreted_age),bandwidth = 30,n=1000))
+  combined_bootstrap_smooths_avg <- cbind(combined_bootstrap_smooths_avg,smoothed_bootstrap_avg$y)
+}
+
+bootstrap_mean_avg <- apply(combined_bootstrap_smooths_avg[,1:n_bootstrap+1],1,mean)
+bootstrap_sd_avg <- apply(combined_bootstrap_smooths_avg[,1:n_bootstrap+1],1,sd)
+bootstrap_lower_avg <- apply(combined_bootstrap_smooths_avg[,1:n_bootstrap+1],1,function(x) range(x)[1])
+bootstrap_upper_avg <- apply(combined_bootstrap_smooths_avg[,1:n_bootstrap+1],1,function(x) range(x)[2])
+bootstrap_results_avg <- data.frame(x = combined_bootstrap_smooths_avg$x,mean=bootstrap_mean_avg,sd=bootstrap_sd_avg,min=bootstrap_lower_avg,max=bootstrap_upper_avg)
+```
+
+We then visualise the formation averaged smoothed trend in the same way. Note the lack of Devonian peak but significantly greater bootstrap uncertainties.
+
+```{r message=FALSE, warning=FALSE}
+
+ggplot(formation_average_omega, aes(x=interpreted_age,y=omega)) +
+  geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + # Dates from MacDonald et al 2019
+  geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=260,xend=339,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=358,xend=366,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
+  geom_segment(inherit.aes=F, aes(x=440,xend=458,y=-0.35,yend=-0.35),colour="#a1cbff",size=15)  +
+  geom_segment(inherit.aes=F, aes(x=579.63,xend=579.88,y=-0.35,yend=-0.35),colour="#a1cbff",size=15)  +
+  geom_segment(inherit.aes=F,aes(xend=458,x=359,y=0,yend=0),colour="#8de09d",size=15) + # Dates from McMahon & Davies 2018, upsurge in mudrock
+  geom_point(size=0.5,colour="grey") + theme_bw() +
+  ylab(expression(omega*", weathering intensity")) + xlab("Age, Ma") + 
+  scale_x_reverse()  +
+  #coord_cartesian(xlim = c(600, 0), ylim=c(-0.5,2.5),expand=c(0,0)) +
+  coord_geo(xlim = c(600, 0), ylim=c(-0.5,2.5),expand=c(0,0))  +
+  geom_text(aes(x=500,y=0,label="Expansion of \n land plants"),colour="darkgreen") +
+  geom_text(aes(x=500,y=-0.35,label="Glaciations"),colour="#002f9c") + 
+  geom_path(data=bootstrap_results_avg,aes(x=x,y=min),colour="darkgrey") + 
+  geom_path(data=bootstrap_results_avg,aes(x=x,y=max),colour="darkgrey") + 
+  geom_path(data=smoothed_weathering_om_avg,aes(x=x,y=y),colour="black") 
+
+```
 
 
