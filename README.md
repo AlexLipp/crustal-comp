@@ -1,6 +1,6 @@
 # Code and data for 'The composition and weathering of the continents over geologic time' 
 
-This repository contains the code and data required to reproduce the results in the paper *'The composition and weathering of the continents over geologic time'.* 
+This repository contains the code and data required to reproduce the results in the paper [*'The composition and weathering of the continents over geologic time'.*](https://eartharxiv.org/qhtb6/) 
 
 ## Code 
 
