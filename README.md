@@ -13,15 +13,19 @@ The script `SGP_query.sql` is the `SQL` command used to query the Sedimentary Ge
 
 ## Data 
 
-### Main data files 
+### Main input data files 
 
 The Sedimentary Geochemistry and Paleoenvironments Project sedimentary major-element data is given in `SGP_final.csv`. Data from [Lipp et al. 2020](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2019GC008758) is given in `sedimentary_rocks_PCA_paper.csv`. 
 
 References for SGP data are given in `SGP_references.csv`. See [`github.com/alexLipp/weathering-and-provenance`](github.com/alexLipp/weathering-and-provenance) for references for data from Lipp et al. 2020.
 
-### Output Data
+### Intermediate results
 
 The cleaned data, calculated ω and ψ coefficients, as well as the fitted compositions are given in: `SGP_data_cleaned_comps.csv`,`SGP_data_cleaned_coeffs.csv` & `SGP_data_cleaned_fit.csv`. Composite samples and their coefficients/fitted compositions are given in:  `mixture_comps.csv`,`mixture_coeffs.csv` & `mixture_fit.csv`
+
+### Output Data
+
+The smoothed weathering time series and the bootstrap uncertainty bounds is given in the file `weathering_time_series.csv`. The $\psi$ and $\omega$ coefficients for every sample, with their SGP sample ID, interpreted Age and stratigraphic formation is given in the file `omega_psi_metadata.csv`. 
 
 ### Additional data
 
