@@ -377,14 +377,27 @@ clr_arch_crust <- clr_trsfm(archean_crust)
 
 arch_crust_uncert_ig <- clr_inv(navdat_resids_cleaned[,oxides_list] + clr_arch_crust[col(navdat_resids_cleaned[,oxides_list])]) 
 modern_crust_uncert_ig <- clr_inv(navdat_resids_cleaned[,oxides_list] + clr_modern_crust[col(navdat_resids_cleaned[,oxides_list])])
+# 
 
+# Mean-normalise the residuals (i.e. zero mean)
 navdat_resids_clean_scal <- scale(navdat_resids_cleaned[,oxides_list],scale = F)
+uncertainty_covariance_matrix <- cov(navdat_resids_clean_scal) 
+print(round(uncertainty_covariance_matrix,3))
+```
+
+`uncertainty_covariance_matrix` is the multivariate analogy to the standard deviation for our estimated crustal compositions. This is shown in Table S1 in the submitted manuscript.
+
+Now that the distribution of residuals has been defined we can add these to the mean estimates to generate empirical uncertainity distributions. 
+
+```{r}
+
 arch_crust_uncert_ig_cent <- clr_inv(navdat_resids_clean_scal +  clr_arch_crust[col(navdat_resids_cleaned[,oxides_list])]) 
 modern_crust_uncert_ig_cent <- clr_inv(navdat_resids_clean_scal+ clr_modern_crust[col(navdat_resids_cleaned[,oxides_list])])
 
 cbined_uncert <- rbind(data.frame(arch_crust_uncert_ig_cent, group="2.5 Ga+"), data.frame(modern_crust_uncert_ig_cent , group="0 - 0.5 Ga"))
-
 ```
+
+
 
 Now we plot up the results for the crustal composition including the uncertainty using a TAS plot. The following chunk creates a TAS plot template using the code [here](https://stackoverflow.com/questions/53918035/use-a-diagram-as-background-template-in-a-plot).
 
@@ -657,7 +670,7 @@ recombined_data_young <- recombined_data_young[order(recombined_data_young$inter
 smoothed_weathering <- data.frame(ksmooth(x=recombined_data_young$interpreted_age,y=recombined_data_young$omega,kernel="normal",bandwidth = 30,n=1000))
 ```
 
-To generate uncertainties for our smoothed trend we use a bootstrap resampling technique. We resample out
+To generate uncertainties for our smoothed trend we use a bootstrap resampling technique. 
 
 ```{r}
 combined_bootstrap_smooths <- data.frame(x = smoothed_weathering$x)
@@ -680,7 +693,7 @@ bootstrap_results <- data.frame(x = combined_bootstrap_smooths$x,mean=bootstrap_
 
 ```
 
-Finally we visualise the trend including the bootstrap uncertainties.
+Finally we visualise the trend including the bootstrap uncertainties. This smoothed time series is written out as an individual file.
 
 ```{r message=FALSE, warning=FALSE}
 # Plot up the data and the smoothed results
@@ -702,11 +715,26 @@ ggplot(recombined_data_young, aes(x=interpreted_age,y=omega)) +
   geom_text(aes(x=500,y=-0.35,label="Glaciations"),colour="#002f9c") 
 ```
 
+### Writing weathering data outfiles 
+
+We write the smoothed weathering series and the $\omega$, $\psi$ data with ages and other metadata to file so that they can be easily accessed.
+
+```{r}
+omega_psi_metadata.csv <- data.frame(age_ma = recombined_data$interpreted_age,omega_weathering =recombined_data$omega,psi_provenance = recombined_data$psi,sample_id = recombined_data$sample_id, strat_name = recombined_data$strat_name_long)
+write.csv(omega_psi_metadata.csv,"data/omega_psi_metadata.csv",row.names = F)
+
+weathering_time_series_out <-data.frame(age_Ma=smoothed_weathering$x,omega=smoothed_weathering$y,bootstrap_upper_bnd=bootstrap_results$max,bootstrap_lower_bnd=bootstrap_results$min)
+
+write.csv(weathering_time_series_out,"data/weathering_time_series.csv",row.names = F)
+```
+
+
 ### Stratigraphic Unit Averages 
 
 Here we generate an analagous figure to above but first we take the average of all the $\omega$ values from within a stratigraphic unit. This will potentially limit the effect of sampling bias. 
 
-First we calculate the mean $\omega$ value for each stratigraphic unit (indicated by the `strat_name_long` field in the SGP database). To give each unit an age we simply take the mean of all the different ages assigned to that unit in the SGP dataset. Next we smooth this data using a gaussian average as normal.
+First we calculate the mean ω value for each stratigraphic unit (indicated by the strat_name_long field in the SGP database). To give each unit an age we simply take the mean of all the different ages assigned to that unit in the SGP dataset. Next we smooth this data using a gaussian average as normal.
+
 
 ```{r}
 formation_average_omega <- aggregate(recombined_data_young$omega,by=list(recombined_data_young$strat_name_long),mean)
@@ -717,7 +745,6 @@ formation_average_omega <- formation_average_omega[order(formation_average_omega
 formation_average_omega <- formation_average_omega[!is.na(formation_average_omega$interpreted_age),]
 
 smoothed_weathering_om_avg <- data.frame(ksmooth(x=formation_average_omega$interpreted_age,y=formation_average_omega$omega,kernel="normal",bandwidth = 30, n=1000))
-
 ```
 
 Similarly, for these formation averaged samples we bootstrap the data in the same way as above. 
@@ -744,8 +771,7 @@ bootstrap_results_avg <- data.frame(x = combined_bootstrap_smooths_avg$x,mean=bo
 
 We then visualise the formation averaged smoothed trend in the same way. Note the lack of Devonian peak but significantly greater bootstrap uncertainties.
 
-```{r message=FALSE, warning=FALSE}
-
+```{r}
 ggplot(formation_average_omega, aes(x=interpreted_age,y=omega)) +
   geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + # Dates from MacDonald et al 2019
   geom_segment(inherit.aes=F, aes(x=0,xend=30,y=-0.35,yend=-0.35),colour="#a1cbff",size=15) + 
@@ -763,8 +789,5 @@ ggplot(formation_average_omega, aes(x=interpreted_age,y=omega)) +
   geom_text(aes(x=500,y=-0.35,label="Glaciations"),colour="#002f9c") + 
   geom_path(data=bootstrap_results_avg,aes(x=x,y=min),colour="darkgrey") + 
   geom_path(data=bootstrap_results_avg,aes(x=x,y=max),colour="darkgrey") + 
-  geom_path(data=smoothed_weathering_om_avg,aes(x=x,y=y),colour="black") 
-
+  geom_path(data=smoothed_weathering_om_avg,aes(x=x,y=y),colour="black")
 ```
-
-
