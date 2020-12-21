@@ -12,7 +12,7 @@ The script `invert_coeffs_grad.py` is a `python` script which calculates the wea
 
 The script `SGP_query.sql` is the `SQL` command used to query the Sedimentary Geochemistry and Paleoenvironments project database.
 
-`macrostrat_units.json` is the [MacroStrat](https://macrostrat.org/) API call to extract the igneous rock data used to generate Figure S5 in the manuscript.
+`macrostrat_mafic.json` and `macrostrat_felsic.json` are the [MacroStrat](https://macrostrat.org/) API calls to extract the igneous rock data used to generate Figure S5 in the manuscript.
 
 ## Data 
 
